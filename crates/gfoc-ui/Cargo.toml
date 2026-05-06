@@ -1,0 +1,15 @@
+[package]
+name = "gui"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+gfoc-proto = { path = "../gfoc-proto", features = ["std"] }
+iced = { version = "0.15.0-dev", features = ["tokio", "debug", "image", "svg"] }
+thiserror = "2.0.18"
+tokio = { version = "1.52.1", features = ["full"] }
+tokio-serial = "5.4.5"
+
+
+[patch.crates-io]
+iced = { git = "https://github.com/iced-rs/iced.git", branch = "master" }
