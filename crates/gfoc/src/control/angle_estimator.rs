@@ -56,11 +56,11 @@ impl AngleEstimator {
 
         // Do not extrapolate forever if the sensor stalls.
         // Tune based on your AS5600 update period.
+        // if dt > 0.050 {
         if dt > 0.050 {
             return None;
         }
-
-        Some(wrap_0_tau(self.last_unwrapped + self.velocity_rad_s * dt))
+        Some(wrap_0_tau(self.last_mech + self.velocity_rad_s * dt))
     }
 
     pub fn velocity_rad_s(&self) -> f32 {

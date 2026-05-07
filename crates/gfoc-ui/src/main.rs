@@ -1,20 +1,22 @@
+mod cache;
 mod client;
 mod worker;
 
 use gfoc_proto::{Command, Response, State};
-use iced::wgpu::wgc::command::CommandEncoderError;
 use iced::widget::{button, column, container, row, text, text_input};
 use iced::{Alignment, Element, Length, Task};
 use tokio_serial::SerialPortInfo;
+
+use crate::cache::{load_config, save_file};
 
 pub struct GFoc {
     baud_rate: String,
     connection: Option<worker::Connection>,
     serial_status: worker::Status,
-    device_state: Option<State>,
     last_message: String,
     available_ports: Vec<SerialPortInfo>,
     selected_port: Option<SerialPortInfo>,
+    foc_status: Option<gfoc_proto::Status>,
 }
 
 #[derive(Debug, Clone)]
@@ -36,10 +38,10 @@ impl GFoc {
             baud_rate: "115200".into(),
             connection: None,
             serial_status: worker::Status::Disconnected,
-            device_state: None,
             last_message: String::from("Waiting for serial connection"),
             selected_port: None,
             available_ports: Vec::new(),
+            foc_status: None,
         }
     }
 
@@ -60,11 +62,11 @@ impl GFoc {
             Message::BaudRateChanged(baud_rate) => {
                 self.baud_rate = baud_rate;
                 self.connection = None;
-                self.device_state = None;
                 self.last_message = String::from("Baud rate changed");
             }
             Message::Connect => {
                 if let Ok(config) = self.serial_config() {
+                    let _ = save_file(&config);
                     let Some(connection) = &mut self.connection else {
                         return Task::none();
                     };
@@ -82,21 +84,32 @@ impl GFoc {
                     self.last_message = String::from("Serial client is not ready");
                     return Task::none();
                 };
-
-                let command = if matches!(self.device_state, Some(State::Running)) {
+                let Some(status) = self.foc_status else {
+                    return Task::none();
+                };
+                let command = if status.state == gfoc_proto::State::Running {
                     Command::Stop
                 } else {
                     Command::Start
                 };
-
                 if connection.send_command(command) {
                     self.last_message = format!("Sent {command:?}");
                 } else {
                     self.connection = None;
                     self.last_message = String::from("Serial command channel is full");
                 }
+                return Task::none();
             }
-            Message::AvailablePorts(ports) => self.available_ports = ports,
+            Message::AvailablePorts(ports) => {
+                if let Ok(Some(config)) = load_config()
+                    && self.selected_port == None
+                {
+                    if let Some(port) = ports.iter().find(|x| x.port_name == config.port) {
+                        self.selected_port = Some(port.clone())
+                    }
+                }
+                self.available_ports = ports
+            }
             Message::SelectedPort(port) => self.selected_port = Some(port),
             Message::Run => {
                 if self.serial_status.is_connected()
@@ -120,18 +133,12 @@ impl GFoc {
                     self.last_message = String::from("Serial client ready");
                 }
                 worker::Event::Status(status) => {
-                    println!("Status: {:?}", status);
-                    if !status.is_connected() {
-                        self.device_state = None;
-                    }
-
                     self.last_message = status.label();
                     self.serial_status = status;
                 }
                 worker::Event::Response(response) => match response {
-                    Response::CyclicStatus { state } => {
-                        self.device_state = Some(state);
-                        self.last_message = format!("State updated: {}", state_label(state));
+                    Response::CyclicStatus(state) => {
+                        self.foc_status = Some(state);
                     }
                     Response::Ack => {
                         self.last_message = String::from("Device acknowledged command");
@@ -147,7 +154,6 @@ impl GFoc {
     }
 
     fn connection(&self) -> Element<'_, Message> {
-        println!("{:?}", self.serial_status);
         let connect_button = if self.serial_status.is_connected() {
             button("Disconnect")
                 .on_press(Message::ClosePort)
@@ -186,9 +192,27 @@ impl GFoc {
         row![].into()
     }
 
-    fn view(&self) -> Element<'_, Message> {
-        let state = self.device_state.map(state_label).unwrap_or("Unknown");
+    fn view_status(&self) -> Option<Element<'_, Message>> {
+        if let Some(state) = self.foc_status {
+            Some(
+                row![
+                    text(format!("State: {:?}", state.state)),
+                    if let Some(angle) = state.angle {
+                        Some(text(format!("Angle: {:.2}", angle)))
+                    } else {
+                        None
+                    },
+                    text(format!("Velocity: {:.2}", state.velocity)),
+                ]
+                .spacing(12)
+                .into(),
+            )
+        } else {
+            None
+        }
+    }
 
+    fn view(&self) -> Element<'_, Message> {
         let status = column![
             text("GFOC Serial").size(28),
             row![
@@ -196,7 +220,6 @@ impl GFoc {
                 text(self.serial_status.label())
             ]
             .spacing(12),
-            row![text("State").width(Length::Fixed(110.0)), text(state)].spacing(12),
             row![
                 text("Last event").width(Length::Fixed(110.0)),
                 text(&self.last_message)
@@ -206,9 +229,14 @@ impl GFoc {
         .spacing(10);
 
         container(
-            column![status, self.connection(), self.controls()]
-                .padding(24)
-                .spacing(24),
+            column![
+                status,
+                self.connection(),
+                self.controls(),
+                self.view_status()
+            ]
+            .padding(24)
+            .spacing(24),
         )
         .center(Length::Fill)
         .into()

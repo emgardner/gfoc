@@ -1,10 +1,11 @@
 use gfoc_proto::{Command, MAX_FRAME, Response, decode_frame, encode_frame};
+use serde::{Deserialize, Serialize};
 use std::{io, time::Duration};
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf};
 use tokio_serial::{SerialPortBuilderExt, SerialStream};
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Config {
     pub port: String,
     pub baud_rate: u32,
@@ -71,12 +72,10 @@ impl<T: Transport> Client<T> {
     }
 
     pub async fn transaction(&mut self, cmd: Command) -> ClientResult<T, Response> {
-        println!("Sending: {:?}", cmd);
         self.write_command(cmd).await?;
         let resp = tokio::time::timeout(Duration::from_millis(100), self.read_response())
             .await
             .map_err(|_| ClientError::TimeoutError)?;
-        println!("Response: {:?}", resp);
         return resp;
     }
 

@@ -13,7 +13,7 @@ pub enum Command {
     Status,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Copy)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum State {
     Idle,
@@ -22,8 +22,16 @@ pub enum State {
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct Status {
+    pub state: State,
+    pub angle: Option<f32>,
+    pub velocity: f32,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Response {
-    CyclicStatus { state: State },
+    CyclicStatus(Status),
     Ack,
 }
 

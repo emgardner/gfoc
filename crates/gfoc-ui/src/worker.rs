@@ -97,7 +97,7 @@ impl<C: IntoClient> ClientWorker<C> {
             config,
             receiver,
             sender,
-            status_poll: Duration::from_millis(1000),
+            status_poll: Duration::from_millis(50),
             // reconnect_duration: Duration::from_secs(1),
         }
     }

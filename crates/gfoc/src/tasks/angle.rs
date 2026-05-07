@@ -31,7 +31,9 @@ pub async fn angle_task(mut as5600: As5600<embassy_stm32::i2c::I2c<'static, Asyn
                 as5600::error::Error::Communication(e) => {
                     defmt::info!("{:?}", e);
                 }
-                _ => {}
+                _ => {
+                    defmt::info!("ae");
+                }
             },
         }
     }

@@ -10,13 +10,12 @@ use crate::tasks::angle::{ANGLE_SIGNAL, AngleReading};
 use crate::tasks::communication::{COMMAND_CHANNEL, RESPONSE_CHANNEL};
 use as5600::asynch::As5600;
 use control::{Step, apply_step};
-use defmt::*;
 use embassy_executor::Spawner;
 use embassy_stm32::bind_interrupts;
 use embassy_stm32::rcc::{AHBPrescaler, APBPrescaler, Pll, PllMul, PllPreDiv, PllRDiv, PllSource};
 use embassy_stm32::{rcc::Hsi48Config, time::Hertz};
-use embassy_time::Timer;
-use gfoc_proto::{Command, Response};
+use embassy_time::Duration;
+use gfoc_proto::{Command, Response, Status};
 
 use {defmt_rtt as _, panic_probe as _};
 
@@ -63,12 +62,6 @@ fn config() -> embassy_stm32::Config {
     config
 }
 
-// pub struct HallSensors<'a> {
-//     pub hall_a: embassy_stm32::exti::ExtiInput<'a, embassy_stm32::mode::Async>,
-//     pub hall_b: embassy_stm32::exti::ExtiInput<'a, embassy_stm32::mode::Async>,
-//     pub hall_c: embassy_stm32::exti::ExtiInput<'a, embassy_stm32::mode::Async>,
-// }
-
 pub enum DriverState {
     Align,
     Run,
@@ -100,7 +93,6 @@ async fn main(spawner: Spawner) {
     );
     let as5600 = As5600::new(i2c);
     spawner.spawn(tasks::angle::angle_task(as5600).unwrap());
-    // spawner.spawn(tasks::angle::control_task().unwrap());
     // I2C1 SCL   PB8
     // I2C1 SDA   PB7/PB9
     // CAN_TX     PB9
@@ -125,15 +117,7 @@ async fn main(spawner: Spawner) {
         embassy_stm32::usart::Config::default(),
     )
     .unwrap();
-    // let command_channel = COMMAND_CHANNEL.init(embassy_sync::channel::Channel::new());
-    // let response_channel = RESPONSE_CHANNEL.init(embassy_sync::channel::Channel::new());
-    // let command_sender = command_channel.sender();
-    // let response_receiver = response_channel.receiver();
-    spawner.spawn(
-        // tasks::communication::communcation_task(uart, command_sender, response_receiver).unwrap(),
-        tasks::communication::communcation_task(uart).unwrap(),
-    );
-    info!("Hello World!");
+    spawner.spawn(tasks::communication::communcation_task(uart).unwrap());
     let mut motor_driver = embassy_stm32::timer::complementary_pwm::ComplementaryPwm::new(
         p.TIM1,
         Some(embassy_stm32::timer::simple_pwm::PwmPin::new(
@@ -172,23 +156,11 @@ async fn main(spawner: Spawner) {
         embassy_stm32::timer::low_level::CountingMode::CenterAlignedUpInterrupts,
     );
     motor_driver.set_master_output_enable(false);
-    // motor_driver.set_dead_time(2);
-    // motor_driver.set_duty(embassy_stm32::timer::Channel::Ch1, 100);
-    // motor_driver.set_duty(embassy_stm32::timer::Channel::Ch2, 100);
-    // motor_driver.set_duty(embassy_stm32::timer::Channel::Ch3, 100);
-    // motor_driver.enable(embassy_stm32::timer::Channel::Ch1);
-    // motor_driver.enable(embassy_stm32::timer::Channel::Ch2);
-    // motor_driver.enable(embassy_stm32::timer::Channel::Ch3);
-    // motor_driver.set_master_output_enable(true);
-    // motor_driver.enable(embassy_stm32::timer::Channel::Ch4);
     motor_driver.set_mms2(embassy_stm32::timer::complementary_pwm::Mms2::Update);
-    // motor_driver.set_mms2(embassy_stm32::timer::complementary_pwm::Mms2::CompareOc4);
-
     spawner.spawn(
         tasks::adc::adc_task(
             p.ADC1, p.ADC2, p.OPAMP1, p.OPAMP2, p.OPAMP3, p.PA1, p.PA2, p.PA3, p.PA5, p.PA6, p.PA7,
             p.PB0, p.PB1, p.PB2, p.PA0, p.PB14,
-            // p.PB12,
         )
         .unwrap(),
     );
@@ -200,10 +172,6 @@ async fn main(spawner: Spawner) {
     let dead_time_counts = max_duty as f32 * desired_dead_time;
     motor_driver.set_dead_time(dead_time_counts as u16);
     motor_driver.set_master_output_enable(true);
-    defmt::info!("Max Duty: {:?}", max_duty);
-    // apply_step(&mut motor_driver, Step::S1, pwm, 0);
-    // Timer::after_millis(200).await;
-    let delay = 100;
     embassy_time::Timer::after_millis(1000).await;
     let mut driver_state = DriverState::Align;
     let mut start_angle = AngleReading {
@@ -217,10 +185,10 @@ async fn main(spawner: Spawner) {
     let mut updates = 0;
     let mut start_time = embassy_time::Instant::now();
     let mut elapsed_angle = 0.0;
-    let mut velocity = 0.0;
     let mut estimator = AngleEstimator::new();
-    let mut last_applied_sector: Option<usize> = None;
     let mut run = false;
+    let max_pwm = 800;
+    let mut ticker = embassy_time::Ticker::every(Duration::from_micros(50));
     loop {
         if let Ok(cmd) = COMMAND_CHANNEL.try_receive() {
             match cmd {
@@ -228,6 +196,7 @@ async fn main(spawner: Spawner) {
                     run = false;
                     defmt::info!("stop");
                     motor_driver.set_master_output_enable(false);
+                    pwm = 0;
                     RESPONSE_CHANNEL.send(Response::Ack).await;
                 }
                 Command::Start => {
@@ -237,7 +206,17 @@ async fn main(spawner: Spawner) {
                     RESPONSE_CHANNEL.send(Response::Ack).await;
                 }
                 Command::Status => {
-                    RESPONSE_CHANNEL.send(Response::Ack).await;
+                    RESPONSE_CHANNEL
+                        .send(Response::CyclicStatus(Status {
+                            state: if run {
+                                gfoc_proto::State::Running
+                            } else {
+                                gfoc_proto::State::Idle
+                            },
+                            angle: estimator.angle_now(embassy_time::Instant::now()),
+                            velocity: estimator.velocity_rad_s(),
+                        }))
+                        .await;
                 }
                 Command::SetCyclic(_) => {
                     RESPONSE_CHANNEL.send(Response::Ack).await;
@@ -253,13 +232,11 @@ async fn main(spawner: Spawner) {
                     apply_step(&mut motor_driver, Step::S2, 300, max_duty);
                     embassy_time::Timer::after_millis(400).await;
                     let commutated_angle = ANGLE_SIGNAL.wait().await;
-                    last_angle = commutated_angle;
-                    let angle_delta = compute_actual_angle(start_angle, commutated_angle);
                     estimator.update(start_angle);
                     estimator.update(commutated_angle);
                     last_angle = commutated_angle;
-                    defmt::info!("{:?} {:?} {:?}", start_angle, commutated_angle, angle_delta);
                     driver_state = DriverState::Run;
+                    ticker.reset();
                 }
                 // DriverState::Run => {
                 //     let current_angle = ANGLE_SIGNAL.wait().await;
@@ -298,6 +275,7 @@ async fn main(spawner: Spawner) {
 
                     if let Some(mech_angle) = estimator.angle_now(embassy_time::Instant::now()) {
                         let sector = sector_from_aligned_angle(mech_angle, start_angle.angle, 7.0);
+                        // let next_sector = (sector + 1) % 6;
                         let next_sector = (sector + 1) % 6;
 
                         apply_step(&mut motor_driver, steps[next_sector], pwm, max_duty);
@@ -310,18 +288,19 @@ async fn main(spawner: Spawner) {
                         let rps = (elapsed_angle / core::f32::consts::TAU) / elapsed_s;
                         let rpm = rps * 60.0;
 
-                        defmt::info!("{:?} {:?} {:?} {:?}", elapsed_s, rps, rpm, pwm);
+                        //defmt::info!("{:?} {:?} {:?} {:?}", elapsed_s, rps, rpm, pwm);
+                        defmt::info!("{:?}", elapsed_s);
 
                         start_time = embassy_time::Instant::now();
                         updates = 0;
                         elapsed_angle = 0.0;
 
-                        if pwm < 300 {
+                        if pwm < max_pwm {
                             pwm += 20;
                         }
                     }
-
-                    Timer::after_micros(5).await;
+                    ticker.next().await;
+                    // Timer::after_micros(5).await;
                 } // DriverState::Run => {
                   //     while let Some(current_angle) = ANGLE_SIGNAL.try_take() {
                   //         estimator.update(current_angle);
@@ -348,26 +327,6 @@ async fn main(spawner: Spawner) {
         } else {
             embassy_time::Timer::after_micros(100).await;
         }
-        // if let Some(sector) = SECTOR_SIGNAL.try_take() {
-        //     defmt::info!("{:?}", sector);
-        // }
-        // for &step in &steps {
-        //     start_angle = ANGLE_SIGNAL.wait().await;
-        //     apply_step(&mut motor_driver, step, pwm, max_duty);
-        //     // let (bemf, bemf1, bemf2, bemf3) = (
-        //     //     gpio_bemf.is_high(),
-        //     //     gpio_bemf1.is_high(),
-        //     //     gpio_bemf2.is_high(),
-        //     //     gpio_bemf3.is_high(),
-        //     // );
-        //     // defmt::info!("{} {} {} {}", bemf, bemf1, bemf2, bemf3);
-        //     // defmt::info!("{} {} {}", bemf1, bemf2, bemf3);
-        //     Timer::after_millis(5).await;
-        //     let commutated_angle = ANGLE_SIGNAL.wait().await;
-        //     let angle_delta = compute_actual_angle(start_angle, commutated_angle);
-        //     defmt::info!("{:?}", angle_delta);
-        // }
-        // defmt::info!("done");
     }
 }
 
@@ -396,6 +355,7 @@ pub fn sector_from_angle(mech_rad: f32, phase_offset: f32, pole_pairs: f32) -> u
     }
     (elec * (6.0 / TAU)) as usize
 }
+
 fn wrap_0_tau(mut x: f32) -> f32 {
     use core::f32::consts::TAU;
     while x >= TAU {

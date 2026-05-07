@@ -6,6 +6,8 @@ edition = "2024"
 [dependencies]
 gfoc-proto = { path = "../gfoc-proto", features = ["std"] }
 iced = { version = "0.15.0-dev", features = ["tokio", "debug", "image", "svg"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
 thiserror = "2.0.18"
 tokio = { version = "1.52.1", features = ["full"] }
 tokio-serial = "5.4.5"
