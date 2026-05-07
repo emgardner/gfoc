@@ -1,4 +1,5 @@
 use defmt::*;
+use embassy_futures::select::Either;
 use embassy_stm32::mode::Async;
 use embassy_stm32::usart::Uart;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
@@ -45,43 +46,65 @@ pub async fn communcation_task(uart: Uart<'static, Async>) {
 
     let mut rx_frame = [0u8; 256];
     let mut rx_len = 0usize;
+    let mut rx_start_time: Option<embassy_time::Instant> = None;
+    let rx_timeout = embassy_time::Duration::from_millis(100);
 
     let mut tx_frame = [0u8; 256];
 
     loop {
-        let mut byte = [0u8; 1];
+        let response_or_receive = embassy_futures::select::select(
+            rb_rx.read(&mut rx_frame[rx_len..]),
+            response_receiver.receive(),
+        );
+        match response_or_receive.await {
+            Either::First(ser_res) => match ser_res {
+                Ok(bytes_len) => {
+                    rx_len += bytes_len;
+                    if rx_len > rx_frame.len() - 1 {
+                        defmt::error!("Rx Frame Overflow");
+                        rx_frame = [0u8; 256];
+                        rx_len = 0;
+                        rx_start_time = None;
+                        continue;
+                    };
 
-        if let Ok(1) = rb_rx.read(&mut byte).await {
-            let b = byte[0];
+                    if let Some(rx_start) = rx_start_time
+                        && embassy_time::Instant::now() - rx_start > rx_timeout
+                    {
+                        defmt::error!("Rx Frame Timeout");
+                        rx_frame = [0u8; 256];
+                        rx_len = 0;
+                        rx_start_time = None;
+                        continue;
+                    } else {
+                        rx_start_time = Some(embassy_time::Instant::now());
+                    };
 
-            if b == 0x00 {
-                if rx_len > 0 {
-                    match decode_frame::<Command>(&mut rx_frame[..rx_len]) {
-                        Ok(command) => {
-                            info!("RX command: {:?}", command);
-                            command_sender.send(command).await;
+                    if rx_len > 1 && rx_frame[rx_len - 1] == 0 {
+                        match decode_frame::<Command>(&mut rx_frame[..rx_len]) {
+                            Ok(command) => {
+                                command_sender.send(command).await;
+                            }
+                            Err(e) => warn!("RX decode failed: {:?}", e),
                         }
-                        Err(e) => warn!("RX decode failed: {:?}", e),
+                        rx_frame = [0u8; 256];
+                        rx_len = 0;
+                        rx_start_time = None;
                     }
-
-                    rx_len = 0;
                 }
-            } else if rx_len < rx_frame.len() {
-                rx_frame[rx_len] = b;
-                rx_len += 1;
-            } else {
-                warn!("RX overflow");
-                rx_len = 0;
-            }
-        }
-
-        if let Ok(response) = response_receiver.try_receive() {
-            match encode_frame(&response, &mut tx_frame) {
+                Err(e) => {
+                    defmt::error!("Serial Error: {:?}", e);
+                    rx_frame = [0u8; 256];
+                    rx_len = 0;
+                    rx_start_time = None;
+                }
+            },
+            Either::Second(response) => match encode_frame(&response, &mut tx_frame) {
                 Ok(frame_len) => {
                     tx_handle.write(&tx_frame[..frame_len]).await.ok();
                 }
                 Err(e) => warn!("TX encode failed: {:?}", e),
-            }
+            },
         }
     }
 }

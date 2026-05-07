@@ -5,17 +5,18 @@ pub mod control;
 pub mod tasks;
 pub mod utils;
 
-use crate::control::angle_estimator::{self, AngleEstimator};
+use crate::control::angle_estimator::AngleEstimator;
 use crate::tasks::angle::{ANGLE_SIGNAL, AngleReading};
+use crate::tasks::communication::{COMMAND_CHANNEL, RESPONSE_CHANNEL};
 use as5600::asynch::As5600;
 use control::{Step, apply_step};
-use core::cmp::max;
 use defmt::*;
 use embassy_executor::Spawner;
 use embassy_stm32::bind_interrupts;
 use embassy_stm32::rcc::{AHBPrescaler, APBPrescaler, Pll, PllMul, PllPreDiv, PllRDiv, PllSource};
 use embassy_stm32::{rcc::Hsi48Config, time::Hertz};
 use embassy_time::Timer;
+use gfoc_proto::{Command, Response};
 
 use {defmt_rtt as _, panic_probe as _};
 
@@ -219,108 +220,134 @@ async fn main(spawner: Spawner) {
     let mut velocity = 0.0;
     let mut estimator = AngleEstimator::new();
     let mut last_applied_sector: Option<usize> = None;
+    let mut run = false;
     loop {
-        match driver_state {
-            DriverState::Align => {
-                apply_step(&mut motor_driver, Step::S1, 300, max_duty);
-                embassy_time::Timer::after_millis(400).await;
-                start_angle = ANGLE_SIGNAL.wait().await;
-                apply_step(&mut motor_driver, Step::S2, 300, max_duty);
-                embassy_time::Timer::after_millis(400).await;
-                let commutated_angle = ANGLE_SIGNAL.wait().await;
-                last_angle = commutated_angle;
-                let angle_delta = compute_actual_angle(start_angle, commutated_angle);
-                estimator.update(start_angle);
-                estimator.update(commutated_angle);
-                last_angle = commutated_angle;
-                defmt::info!("{:?} {:?} {:?}", start_angle, commutated_angle, angle_delta);
-                driver_state = DriverState::Run;
-            }
-            // DriverState::Run => {
-            //     let current_angle = ANGLE_SIGNAL.wait().await;
-            //     // let angle = compute_actual_angle(start_angle, current_angle);
-            //     // defmt::info!("{}", angle);
-            //     let sector = sector_from_aligned_angle(current_angle.angle, start_angle.angle, 7.0);
-            //     let next_sector = (sector + 1) % 6;
-            //     // let next_sector = sector;
-            //     apply_step(&mut motor_driver, steps[next_sector], pwm, max_duty);
-            //     updates += 1;
-            //     elapsed_angle += compute_actual_angle(last_angle, current_angle);
-            //     last_angle = current_angle;
-            //     if updates == 1000 {
-            //         let elapsed_avg =
-            //             (embassy_time::Instant::now() - start_time).as_millis() as f32 / 1000.0;
-            //         let rps = (1.0 / (elapsed_avg / 1000.0))
-            //             * ((elapsed_angle / 1000.0) / core::f32::consts::TAU);
-            //         let rpm = rps * 60.0;
-            //         defmt::info!("{:?} {:?} {:?} {:?}", elapsed_avg, rps, rpm, pwm);
-            //         start_time = embassy_time::Instant::now();
-            //         updates = 0;
-            //         elapsed_angle = 0.0;
-            //         pwm += 20;
-            //     }
-            // }
-            DriverState::Run => {
-                if let Some(current_angle) = ANGLE_SIGNAL.try_take() {
-                    let delta = compute_actual_angle(last_angle, current_angle);
-
-                    elapsed_angle += delta;
-                    updates += 1;
-
-                    estimator.update(current_angle);
-                    last_angle = current_angle;
+        if let Ok(cmd) = COMMAND_CHANNEL.try_receive() {
+            match cmd {
+                Command::Stop => {
+                    run = false;
+                    defmt::info!("stop");
+                    motor_driver.set_master_output_enable(false);
+                    RESPONSE_CHANNEL.send(Response::Ack).await;
                 }
-
-                if let Some(mech_angle) = estimator.angle_now(embassy_time::Instant::now()) {
-                    let sector = sector_from_aligned_angle(mech_angle, start_angle.angle, 7.0);
-                    let next_sector = (sector + 1) % 6;
-
-                    apply_step(&mut motor_driver, steps[next_sector], pwm, max_duty);
-                } else {
-                    // Sensor is stale. Safer than commutating blindly.
-                    apply_step(&mut motor_driver, Step::S1, 0, max_duty);
+                Command::Start => {
+                    defmt::info!("start");
+                    run = true;
+                    motor_driver.set_master_output_enable(true);
+                    RESPONSE_CHANNEL.send(Response::Ack).await;
                 }
-                if updates >= 1000 {
-                    let elapsed_s = duration_to_secs(embassy_time::Instant::now() - start_time);
-                    let rps = (elapsed_angle / core::f32::consts::TAU) / elapsed_s;
-                    let rpm = rps * 60.0;
-
-                    defmt::info!("{:?} {:?} {:?} {:?}", elapsed_s, rps, rpm, pwm);
-
-                    start_time = embassy_time::Instant::now();
-                    updates = 0;
-                    elapsed_angle = 0.0;
-
-                    if pwm < 300 {
-                        pwm += 20;
-                    }
+                Command::Status => {
+                    RESPONSE_CHANNEL.send(Response::Ack).await;
                 }
-
-                Timer::after_micros(5).await;
-            } // DriverState::Run => {
-              //     while let Some(current_angle) = ANGLE_SIGNAL.try_take() {
-              //         estimator.update(current_angle);
-              //         last_angle = current_angle;
-              //     }
-
-              //     let now = embassy_time::Instant::now();
-
-              //     if let Some(mech_angle) = estimator.angle_now(now) {
-              //         let sector = sector_from_aligned_angle(mech_angle, start_angle.angle, 7.0);
-              //         let next_sector = (sector + 1) % 6;
-
-              //         if last_applied_sector != Some(next_sector) {
-              //             apply_step(&mut motor_driver, steps[next_sector], pwm, max_duty);
-              //             last_applied_sector = Some(next_sector);
-              //         }
-              //     }
-              //     if pwm < 800 {
-              //         pwm += 10;
-              //     }
-              //     Timer::after_micros(100).await;
-              // }
+                Command::SetCyclic(_) => {
+                    RESPONSE_CHANNEL.send(Response::Ack).await;
+                }
+            };
         }
+        if run {
+            match driver_state {
+                DriverState::Align => {
+                    apply_step(&mut motor_driver, Step::S1, 300, max_duty);
+                    embassy_time::Timer::after_millis(400).await;
+                    start_angle = ANGLE_SIGNAL.wait().await;
+                    apply_step(&mut motor_driver, Step::S2, 300, max_duty);
+                    embassy_time::Timer::after_millis(400).await;
+                    let commutated_angle = ANGLE_SIGNAL.wait().await;
+                    last_angle = commutated_angle;
+                    let angle_delta = compute_actual_angle(start_angle, commutated_angle);
+                    estimator.update(start_angle);
+                    estimator.update(commutated_angle);
+                    last_angle = commutated_angle;
+                    defmt::info!("{:?} {:?} {:?}", start_angle, commutated_angle, angle_delta);
+                    driver_state = DriverState::Run;
+                }
+                // DriverState::Run => {
+                //     let current_angle = ANGLE_SIGNAL.wait().await;
+                //     // let angle = compute_actual_angle(start_angle, current_angle);
+                //     // defmt::info!("{}", angle);
+                //     let sector = sector_from_aligned_angle(current_angle.angle, start_angle.angle, 7.0);
+                //     let next_sector = (sector + 1) % 6;
+                //     // let next_sector = sector;
+                //     apply_step(&mut motor_driver, steps[next_sector], pwm, max_duty);
+                //     updates += 1;
+                //     elapsed_angle += compute_actual_angle(last_angle, current_angle);
+                //     last_angle = current_angle;
+                //     if updates == 1000 {
+                //         let elapsed_avg =
+                //             (embassy_time::Instant::now() - start_time).as_millis() as f32 / 1000.0;
+                //         let rps = (1.0 / (elapsed_avg / 1000.0))
+                //             * ((elapsed_angle / 1000.0) / core::f32::consts::TAU);
+                //         let rpm = rps * 60.0;
+                //         defmt::info!("{:?} {:?} {:?} {:?}", elapsed_avg, rps, rpm, pwm);
+                //         start_time = embassy_time::Instant::now();
+                //         updates = 0;
+                //         elapsed_angle = 0.0;
+                //         pwm += 20;
+                //     }
+                // }
+                DriverState::Run => {
+                    if let Some(current_angle) = ANGLE_SIGNAL.try_take() {
+                        let delta = compute_actual_angle(last_angle, current_angle);
 
+                        elapsed_angle += delta;
+                        updates += 1;
+
+                        estimator.update(current_angle);
+                        last_angle = current_angle;
+                    }
+
+                    if let Some(mech_angle) = estimator.angle_now(embassy_time::Instant::now()) {
+                        let sector = sector_from_aligned_angle(mech_angle, start_angle.angle, 7.0);
+                        let next_sector = (sector + 1) % 6;
+
+                        apply_step(&mut motor_driver, steps[next_sector], pwm, max_duty);
+                    } else {
+                        // Sensor is stale. Safer than commutating blindly.
+                        apply_step(&mut motor_driver, Step::S1, 0, max_duty);
+                    }
+                    if updates >= 1000 {
+                        let elapsed_s = duration_to_secs(embassy_time::Instant::now() - start_time);
+                        let rps = (elapsed_angle / core::f32::consts::TAU) / elapsed_s;
+                        let rpm = rps * 60.0;
+
+                        defmt::info!("{:?} {:?} {:?} {:?}", elapsed_s, rps, rpm, pwm);
+
+                        start_time = embassy_time::Instant::now();
+                        updates = 0;
+                        elapsed_angle = 0.0;
+
+                        if pwm < 300 {
+                            pwm += 20;
+                        }
+                    }
+
+                    Timer::after_micros(5).await;
+                } // DriverState::Run => {
+                  //     while let Some(current_angle) = ANGLE_SIGNAL.try_take() {
+                  //         estimator.update(current_angle);
+                  //         last_angle = current_angle;
+                  //     }
+
+                  //     let now = embassy_time::Instant::now();
+
+                  //     if let Some(mech_angle) = estimator.angle_now(now) {
+                  //         let sector = sector_from_aligned_angle(mech_angle, start_angle.angle, 7.0);
+                  //         let next_sector = (sector + 1) % 6;
+
+                  //         if last_applied_sector != Some(next_sector) {
+                  //             apply_step(&mut motor_driver, steps[next_sector], pwm, max_duty);
+                  //             last_applied_sector = Some(next_sector);
+                  //         }
+                  //     }
+                  //     if pwm < 800 {
+                  //         pwm += 10;
+                  //     }
+                  //     Timer::after_micros(100).await;
+                  // }
+            }
+        } else {
+            embassy_time::Timer::after_micros(100).await;
+        }
         // if let Some(sector) = SECTOR_SIGNAL.try_take() {
         //     defmt::info!("{:?}", sector);
         // }

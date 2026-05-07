@@ -1,15 +1,16 @@
 mod client;
+mod worker;
 
 use gfoc_proto::{Command, Response, State};
+use iced::wgpu::wgc::command::CommandEncoderError;
 use iced::widget::{button, column, container, row, text, text_input};
 use iced::{Alignment, Element, Length, Task};
 use tokio_serial::SerialPortInfo;
 
 pub struct GFoc {
-    port: String,
     baud_rate: String,
-    connection: Option<client::Connection>,
-    serial_status: client::Status,
+    connection: Option<worker::Connection>,
+    serial_status: worker::Status,
     device_state: Option<State>,
     last_message: String,
     available_ports: Vec<SerialPortInfo>,
@@ -18,21 +19,23 @@ pub struct GFoc {
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    PortChanged(String),
     BaudRateChanged(String),
     ToggleRun,
-    Serial(client::Event),
+    Worker(worker::Event),
     AvailablePorts(Vec<SerialPortInfo>),
     SelectedPort(SerialPortInfo),
+    Connect,
+    ClosePort,
+    Run,
+    Stop,
 }
 
 impl GFoc {
     fn new() -> GFoc {
         Self {
-            port: "".into(),
             baud_rate: "115200".into(),
             connection: None,
-            serial_status: client::Status::Disconnected,
+            serial_status: worker::Status::Disconnected,
             device_state: None,
             last_message: String::from("Waiting for serial connection"),
             selected_port: None,
@@ -40,21 +43,39 @@ impl GFoc {
         }
     }
 
+    fn serial_config(&self) -> Result<client::Config, String> {
+        let baud_rate = self.baud_rate.parse::<u32>().map_err(|e| e.to_string())?;
+        if let Some(port) = &self.selected_port {
+            Ok(client::Config {
+                port: port.port_name.clone(),
+                baud_rate,
+            })
+        } else {
+            Err("No Selected Port".into())
+        }
+    }
+
     fn update(&mut self, msg: Message) -> Task<Message> {
         match msg {
-            Message::PortChanged(port) => {
-                self.port = port;
-                self.connection = None;
-                self.device_state = None;
-                self.serial_status = client::Status::Disconnected;
-                self.last_message = String::from("Serial port changed");
-            }
             Message::BaudRateChanged(baud_rate) => {
                 self.baud_rate = baud_rate;
                 self.connection = None;
                 self.device_state = None;
-                self.serial_status = client::Status::Disconnected;
                 self.last_message = String::from("Baud rate changed");
+            }
+            Message::Connect => {
+                if let Ok(config) = self.serial_config() {
+                    let Some(connection) = &mut self.connection else {
+                        return Task::none();
+                    };
+                    connection.send(worker::Input::OpenPort(config));
+                }
+            }
+            Message::ClosePort => {
+                if let Some(ref mut connection) = self.connection {
+                    connection.send(worker::Input::ClosePort);
+                }
+                return Task::none();
             }
             Message::ToggleRun => {
                 let Some(connection) = &mut self.connection else {
@@ -68,7 +89,7 @@ impl GFoc {
                     Command::Start
                 };
 
-                if connection.send(command) {
+                if connection.send_command(command) {
                     self.last_message = format!("Sent {command:?}");
                 } else {
                     self.connection = None;
@@ -77,12 +98,29 @@ impl GFoc {
             }
             Message::AvailablePorts(ports) => self.available_ports = ports,
             Message::SelectedPort(port) => self.selected_port = Some(port),
-            Message::Serial(event) => match event {
-                client::Event::Ready(connection) => {
+            Message::Run => {
+                if self.serial_status.is_connected()
+                    && let Some(connection) = &mut self.connection
+                {
+                    connection.send_command(Command::Start);
+                }
+                return Task::none();
+            }
+            Message::Stop => {
+                if self.serial_status.is_connected()
+                    && let Some(connection) = &mut self.connection
+                {
+                    connection.send_command(Command::Stop);
+                }
+                return Task::none();
+            }
+            Message::Worker(event) => match event {
+                worker::Event::Ready(connection) => {
                     self.connection = Some(connection);
                     self.last_message = String::from("Serial client ready");
                 }
-                client::Event::Status(status) => {
+                worker::Event::Status(status) => {
+                    println!("Status: {:?}", status);
                     if !status.is_connected() {
                         self.device_state = None;
                     }
@@ -90,7 +128,7 @@ impl GFoc {
                     self.last_message = status.label();
                     self.serial_status = status;
                 }
-                client::Event::Response(response) => match response {
+                worker::Event::Response(response) => match response {
                     Response::CyclicStatus { state } => {
                         self.device_state = Some(state);
                         self.last_message = format!("State updated: {}", state_label(state));
@@ -99,7 +137,7 @@ impl GFoc {
                         self.last_message = String::from("Device acknowledged command");
                     }
                 },
-                client::Event::Error(error) => {
+                worker::Event::Error(error) => {
                     self.last_message = error;
                 }
             },
@@ -108,41 +146,20 @@ impl GFoc {
         Task::none()
     }
 
-    // fn subscription(&self) -> Subscription<Message> {
-    //     client::subscription(self.config()).map(Message::Serial)
-    // }
-
-    // fn config(&self) -> Option<client::Config> {
-    //     let port = self.port.trim();
-
-    //     if port.is_empty() {
-    //         return None;
-    //     }
-
-    //     let Ok(baud_rate) = self.baud_rate.trim().parse::<u32>() else {
-    //         return None;
-    //     };
-
-    //     if baud_rate == 0 {
-    //         return None;
-    //     }
-
-    //     Some(client::Config {
-    //         port: port.to_string(),
-    //         baud_rate,
-    //     })
-    // }
-
-    fn view(&self) -> Element<'_, Message> {
-        let state = self.device_state.map(state_label).unwrap_or("Unknown");
-
-        let mut run_button =
-            button(text(toggle_label(self.device_state)).width(Length::Fixed(88.0)))
-                .padding([10, 18]);
-
-        if !self.serial_status.is_connected() {
-            run_button = run_button.on_press(Message::ToggleRun);
-        }
+    fn connection(&self) -> Element<'_, Message> {
+        println!("{:?}", self.serial_status);
+        let connect_button = if self.serial_status.is_connected() {
+            button("Disconnect")
+                .on_press(Message::ClosePort)
+                .padding([10, 18])
+                .style(iced::widget::button::danger)
+        } else if self.serial_status == worker::Status::Disconnected {
+            button("Connect")
+                .on_press(Message::Connect)
+                .padding([10, 18])
+        } else {
+            button("Connecting").padding([10, 18])
+        };
 
         let controls = row![
             view_ports(self.available_ports.clone(), self.selected_port.clone()),
@@ -150,10 +167,27 @@ impl GFoc {
                 .on_input(Message::BaudRateChanged)
                 .padding(10)
                 .width(Length::Fixed(120.0)),
-            run_button,
+            connect_button,
         ]
         .spacing(12)
         .align_y(Alignment::Center);
+        controls.into()
+    }
+
+    fn controls(&self) -> Element<'_, Message> {
+        if self.serial_status.is_connected() {
+            return row![
+                iced::widget::button("Run").on_press(Message::Run),
+                iced::widget::button("Stop").on_press(Message::Stop),
+            ]
+            .spacing(12)
+            .into();
+        }
+        row![].into()
+    }
+
+    fn view(&self) -> Element<'_, Message> {
+        let state = self.device_state.map(state_label).unwrap_or("Unknown");
 
         let status = column![
             text("GFOC Serial").size(28),
@@ -171,9 +205,13 @@ impl GFoc {
         ]
         .spacing(10);
 
-        container(column![status, controls].padding(24).spacing(24))
-            .center(Length::Fill)
-            .into()
+        container(
+            column![status, self.connection(), self.controls()]
+                .padding(24)
+                .spacing(24),
+        )
+        .center(Length::Fill)
+        .into()
     }
 }
 
@@ -181,7 +219,7 @@ fn main() -> iced::Result {
     iced::application(|| GFoc::new(), GFoc::update, GFoc::view)
         .subscription(|_| {
             iced::Subscription::batch(vec![
-                client::gfoc_subscription().map(Message::Serial),
+                worker::gfoc_subscription().map(Message::Worker),
                 iced::time::every(std::time::Duration::from_secs(1)).map(|_| {
                     if let Ok(ports) = tokio_serial::available_ports() {
                         Message::AvailablePorts(
