@@ -1,13 +1,14 @@
 #![no_std]
 #![no_main]
 
+pub mod board;
 pub mod control;
 pub mod foc_tests;
 pub mod tasks;
 pub mod trap_tests;
 pub mod utils;
 
-use crate::tasks::adc::SAMPLE_TOGGLE;
+use crate::board::{OpAmpPins, SAMPLE_TOGGLE};
 use as5600::asynch::As5600;
 use embassy_executor::Spawner;
 use embassy_stm32::bind_interrupts;
@@ -19,7 +20,6 @@ use {defmt_rtt as _, panic_probe as _};
 bind_interrupts!(struct Irqs {
     I2C1_ER => embassy_stm32::i2c::ErrorInterruptHandler<embassy_stm32::peripherals::I2C1>;
     I2C1_EV => embassy_stm32::i2c::EventInterruptHandler<embassy_stm32::peripherals::I2C1>;
-    // USART2 => embassy_stm32::usart::
     USART2 => embassy_stm32::usart::InterruptHandler<embassy_stm32::peripherals::USART2>;
     DMA1_CHANNEL3 => embassy_stm32::dma::InterruptHandler<embassy_stm32::peripherals::DMA1_CH3>;
     DMA1_CHANNEL4 => embassy_stm32::dma::InterruptHandler<embassy_stm32::peripherals::DMA1_CH4>;
@@ -67,12 +67,33 @@ pub enum DriverState {
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     let p = embassy_stm32::init(config());
+    let shunt1 = OpAmpPins {
+        opamp: p.OPAMP1,
+        in_pin: p.PA1,
+        bias_pin: p.PA3,
+        out_pin: p.PA2,
+        gain: embassy_stm32::opamp::OpAmpGain::Mul16,
+    };
+    let shunt2 = OpAmpPins {
+        opamp: p.OPAMP2,
+        in_pin: p.PA7,
+        bias_pin: p.PA5,
+        out_pin: p.PA6,
+        gain: embassy_stm32::opamp::OpAmpGain::Mul16,
+    };
+    let shunt3 = OpAmpPins {
+        opamp: p.OPAMP3,
+        in_pin: p.PB0,
+        bias_pin: p.PB2,
+        out_pin: p.PB1,
+        gain: embassy_stm32::opamp::OpAmpGain::Mul16,
+    };
     spawner.spawn(
-        tasks::adc::adc_task(
-            p.ADC1, p.ADC2, p.OPAMP1, p.OPAMP2, p.OPAMP3, p.PA1, p.PA2, p.PA3, p.PA5, p.PA6, p.PA7,
-            p.PB0, p.PB1, p.PB2, p.PA0, p.PB14,
-        )
-        .unwrap(),
+        // tasks::adc::adc_task(
+        //     p.ADC1, p.ADC2, p.OPAMP1, p.OPAMP2, p.OPAMP3, p.PA1, p.PA2, p.PA3, p.PA5, p.PA6, p.PA7,
+        //     p.PB0, p.PB1, p.PB2, p.PA0, p.PB14,
+        // )
+        tasks::adc::adc_task(p.ADC1, p.ADC2, shunt1, shunt2, shunt3, p.PA0, p.PB14).unwrap(),
     );
     defmt::info!("Adc Spawned");
     // GPIO BEMF is used as a way of enabling the voltage divider

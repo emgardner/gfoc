@@ -1,60 +1,27 @@
+use crate::board::{
+    ADCS_HANDLE, OP1, OP2, OP3, R_SHUNT, SAMPLE_TOGGLE, SHUNT1, SHUNT2, SHUNT3, Shunt1, Shunt2,
+    Shunt3, V_REF, VBUS, init_biased_opamp_ext,
+};
 use crate::utils;
-use core::cell::RefCell;
+use embassy_stm32::Peri;
 use embassy_stm32::adc::AdcChannel;
-use embassy_stm32::adc::{Adc, AdcConfig, Exten, InjectedAdc, InjectedAdcTrigger, SampleTime};
+use embassy_stm32::adc::{Adc, AdcConfig, Exten, InjectedAdcTrigger, SampleTime};
 use embassy_stm32::interrupt;
 use embassy_stm32::interrupt::typelevel::ADC1_2;
 use embassy_stm32::interrupt::typelevel::Interrupt;
-use embassy_stm32::opamp::OpAmpOutput;
-use embassy_stm32::opamp::{OpAmp, OpAmpGain, OpAmpSpeed};
-use embassy_stm32::pac::adc::Adc as AdcRegs;
-use embassy_stm32::{Peri, peripherals};
-use embassy_sync::blocking_mutex::CriticalSectionMutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
-use static_cell::StaticCell;
-
-pub const V_REF: f32 = 3.3;
-pub const R_SHUNT: f32 = 0.003;
-
-static ADCS_HANDLE: CriticalSectionMutex<
-    RefCell<Option<(InjectedAdc<AdcRegs>, InjectedAdc<AdcRegs>)>>,
-> = CriticalSectionMutex::new(RefCell::new(None));
-
-static OP1: StaticCell<embassy_stm32::opamp::OpAmp<'static, peripherals::OPAMP1>> =
-    StaticCell::new();
-static OP2: StaticCell<embassy_stm32::opamp::OpAmp<'static, peripherals::OPAMP2>> =
-    StaticCell::new();
-static OP3: StaticCell<embassy_stm32::opamp::OpAmp<'static, peripherals::OPAMP3>> =
-    StaticCell::new();
-
-static SHUNT1: StaticCell<OpAmpOutput<'static, peripherals::OPAMP1>> = StaticCell::new();
-static SHUNT2: StaticCell<OpAmpOutput<'static, peripherals::OPAMP2>> = StaticCell::new();
-static SHUNT3: StaticCell<OpAmpOutput<'static, peripherals::OPAMP3>> = StaticCell::new();
-static VBUS: StaticCell<Peri<'static, peripherals::PA0>> = StaticCell::new();
 
 static RAW_CURRENT_SIGNAL: Signal<CriticalSectionRawMutex, (u16, u16, u16, u16)> = Signal::new();
 pub static CURRENT_SIGNAL: Signal<CriticalSectionRawMutex, (f32, f32, f32, f32)> = Signal::new();
-pub static SAMPLE_TOGGLE: CriticalSectionMutex<
-    RefCell<Option<embassy_stm32::gpio::Output<'static>>>,
-> = CriticalSectionMutex::new(RefCell::new(None));
 
 #[embassy_executor::task]
 pub async fn adc_task(
     adc_1: Peri<'static, embassy_stm32::peripherals::ADC1>,
     adc_2: Peri<'static, embassy_stm32::peripherals::ADC2>,
-    opamp_1: Peri<'static, embassy_stm32::peripherals::OPAMP1>,
-    opamp_2: Peri<'static, embassy_stm32::peripherals::OPAMP2>,
-    opamp_3: Peri<'static, embassy_stm32::peripherals::OPAMP3>,
-    pa_1: Peri<'static, embassy_stm32::peripherals::PA1>,
-    pa_2: Peri<'static, embassy_stm32::peripherals::PA2>,
-    pa_3: Peri<'static, embassy_stm32::peripherals::PA3>,
-    pa_5: Peri<'static, embassy_stm32::peripherals::PA5>,
-    pa_6: Peri<'static, embassy_stm32::peripherals::PA6>,
-    pa_7: Peri<'static, embassy_stm32::peripherals::PA7>,
-    pb_0: Peri<'static, embassy_stm32::peripherals::PB0>,
-    pb_1: Peri<'static, embassy_stm32::peripherals::PB1>,
-    pb_2: Peri<'static, embassy_stm32::peripherals::PB2>,
+    shunt1: Shunt1,
+    shunt2: Shunt2,
+    shunt3: Shunt3,
     pa_0: Peri<'static, embassy_stm32::peripherals::PA0>,
     _pb_14: Peri<'static, embassy_stm32::peripherals::PB14>,
     // _pb_12: Peri<'static, embassy_stm32::peripherals::PB12>,
@@ -64,14 +31,9 @@ pub async fn adc_task(
     // Pot        PB12
     let adc1 = Adc::new(adc_1, AdcConfig::default());
     let adc2 = Adc::new(adc_2, AdcConfig::default());
-    let op1 = OP1.init(OpAmp::new(opamp_1, OpAmpSpeed::HighSpeed));
-    let op2 = OP2.init(OpAmp::new(opamp_2, OpAmpSpeed::HighSpeed));
-    let op3 = OP3.init(OpAmp::new(opamp_3, OpAmpSpeed::HighSpeed));
-
-    let shunt1 = SHUNT1.init(op1.pga_biased_ext(pa_1, pa_3, pa_2, OpAmpGain::Mul16));
-    let shunt2 = SHUNT2.init(op2.pga_biased_ext(pa_7, pa_5, pa_6, OpAmpGain::Mul16));
-    let shunt3 = SHUNT3.init(op3.pga_biased_ext(pb_0, pb_2, pb_1, OpAmpGain::Mul16));
-
+    let shunt1 = init_biased_opamp_ext(&OP1, &SHUNT1, shunt1);
+    let shunt2 = init_biased_opamp_ext(&OP2, &SHUNT2, shunt2);
+    let shunt3 = init_biased_opamp_ext(&OP3, &SHUNT3, shunt3);
     let shunt1_ch = shunt1.degrade_adc();
     let shunt2_ch = shunt2.degrade_adc();
     let shunt3_ch = shunt3.degrade_adc();
@@ -86,34 +48,11 @@ pub async fn adc_task(
         InjectedAdcTrigger::from(embassy_stm32::triggers::TIM1_TRGO2, Exten::RisingEdge),
         true, // enable JEOS interrupt
     );
-    // let injected_adc_1 = adc1.setup_injected_conversions(
-    //     [
-    //         (shunt1_ch, SampleTime::Cycles25),
-    //         (shunt3_ch, SampleTime::Cycles25),
-    //         (vbus_ch, SampleTime::Cycles25),
-    //     ],
-    //     InjectedAdcTrigger::from(embassy_stm32::triggers::TIM1_CC4, Exten::RisingEdge),
-    //     true, // enable JEOS interrupt
-    // );
-    // let injected_adc_1 = adc1.into_ring_buffered_and_injected(
-    //     [
-    //         (shunt1_ch, SampleTime::Cycles125),
-    //         (shunt3_ch, SampleTime::Cycles125),
-    //     ],
-    //     InjectedAdcTrigger::from(embassy_stm32::triggers::TIM1_TRGO2, Exten::RisingEdge),
-    //     true, // enable JEOS interrupt
-    // );
-
     let injected_adc_2 = adc2.setup_injected_conversions(
         [(shunt2_ch, SampleTime::Cycles25)],
         InjectedAdcTrigger::from(embassy_stm32::triggers::TIM1_TRGO2, Exten::RisingEdge),
         true, // enable JEOS interrupt
     );
-    // let injected_adc_2 = adc2.setup_injected_conversions(
-    //     [(shunt2_ch, SampleTime::Cycles25)],
-    //     InjectedAdcTrigger::from(embassy_stm32::triggers::TIM1_CC4, Exten::RisingEdge),
-    //     true, // enable JEOS interrupt
-    // );
 
     critical_section::with(|cs| {
         ADCS_HANDLE
@@ -174,7 +113,6 @@ unsafe fn ADC1_2() {
         if let Some((injected_adc_1, injected_adc_2)) = ADCS_HANDLE.borrow(cs).borrow_mut().as_mut()
         {
             let mut injected_data_1 = [0u16; 3];
-            // let mut injected_data_1 = [0u16; 1];
             let mut injected_data_2 = [0u16; 1];
             injected_adc_1.read_injected_samples(&mut injected_data_1);
             injected_adc_2.read_injected_samples(&mut injected_data_2);
