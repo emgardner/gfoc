@@ -26,6 +26,10 @@ pub struct Status {
     pub state: State,
     pub angle: Option<f32>,
     pub velocity: f32,
+    pub current_a: f32,
+    pub current_b: f32,
+    pub current_c: f32,
+    pub v_bus: f32,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy)]

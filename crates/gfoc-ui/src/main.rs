@@ -203,6 +203,10 @@ impl GFoc {
                         None
                     },
                     text(format!("Velocity: {:.2}", state.velocity)),
+                    text(format!("Current A: {:.2}", state.current_a)),
+                    text(format!("Current B: {:.2}", state.current_b)),
+                    text(format!("Current C: {:.2}", state.current_c)),
+                    text(format!("VBUS: {:.2}", state.v_bus))
                 ]
                 .spacing(12)
                 .into(),

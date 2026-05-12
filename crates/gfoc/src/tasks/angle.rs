@@ -16,7 +16,6 @@ pub static ANGLE_SIGNAL: Signal<CriticalSectionRawMutex, AngleReading> = Signal:
 
 #[embassy_executor::task]
 pub async fn angle_task(mut as5600: As5600<embassy_stm32::i2c::I2c<'static, Async, Master>>) {
-    defmt::info!("Running");
     loop {
         let angle = as5600.angle().await;
         match angle {
@@ -30,6 +29,7 @@ pub async fn angle_task(mut as5600: As5600<embassy_stm32::i2c::I2c<'static, Asyn
             Err(e) => match e {
                 as5600::error::Error::Communication(e) => {
                     defmt::info!("{:?}", e);
+                    embassy_time::Timer::after_millis(100).await;
                 }
                 _ => {
                     defmt::info!("ae");

@@ -1,6 +1,7 @@
 pub mod angle_estimator;
 pub mod driver;
 use defmt::Format;
+use embassy_stm32::timer::AdvancedInstance4Channel;
 
 pub struct MotorCharacterization {
     pub phase_resistance: f32,
@@ -54,10 +55,6 @@ impl Sector {
     }
 }
 
-pub struct TrapezoidalPwm;
-
-impl TrapezoidalPwm {}
-
 pub fn get_vlimit_pwm(v_limit: f32, v_supply: f32) -> f32 {
     (v_limit / v_supply).clamp(0.0, 1.0)
 }
@@ -96,11 +93,8 @@ pub enum PhaseCommand {
     HighOn,
 }
 
-fn apply_phase(
-    driver: &mut embassy_stm32::timer::complementary_pwm::ComplementaryPwm<
-        '_,
-        embassy_stm32::peripherals::TIM1,
-    >,
+fn apply_phase<T: AdvancedInstance4Channel>(
+    driver: &mut embassy_stm32::timer::complementary_pwm::ComplementaryPwm<'_, T>,
     ch: embassy_stm32::timer::Channel,
     cmd: PhaseCommand,
     max_duty: u32,
@@ -135,11 +129,8 @@ fn apply_phase(
     }
 }
 
-pub fn apply_step(
-    driver: &mut embassy_stm32::timer::complementary_pwm::ComplementaryPwm<
-        '_,
-        embassy_stm32::peripherals::TIM1,
-    >,
+pub fn apply_step<T: AdvancedInstance4Channel>(
+    driver: &mut embassy_stm32::timer::complementary_pwm::ComplementaryPwm<'_, T>,
     step: Step,
     pwm: u32,
     max_duty: u32,
@@ -192,4 +183,28 @@ pub fn apply_step(
     apply_phase(driver, embassy_stm32::timer::Channel::Ch1, u, max_duty);
     apply_phase(driver, embassy_stm32::timer::Channel::Ch2, v, max_duty);
     apply_phase(driver, embassy_stm32::timer::Channel::Ch3, w, max_duty);
+}
+
+fn apply_channel<T: AdvancedInstance4Channel>(
+    driver: &mut embassy_stm32::timer::complementary_pwm::ComplementaryPwm<'_, T>,
+    channel: embassy_stm32::timer::Channel,
+    pwm: u32,
+) {
+    // if pwm == 0 {
+    //     driver.disable(channel);
+    // } else {
+    driver.set_duty(channel, pwm);
+    driver.enable(channel);
+    // }
+}
+
+pub fn apply_pwms<T: AdvancedInstance4Channel>(
+    driver: &mut embassy_stm32::timer::complementary_pwm::ComplementaryPwm<'_, T>,
+    u: u32,
+    v: u32,
+    w: u32,
+) {
+    apply_channel(driver, embassy_stm32::timer::Channel::Ch1, u);
+    apply_channel(driver, embassy_stm32::timer::Channel::Ch2, v);
+    apply_channel(driver, embassy_stm32::timer::Channel::Ch3, w);
 }

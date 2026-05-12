@@ -55,8 +55,6 @@ impl AngleEstimator {
         let dt = duration_to_secs(now - self.last_time);
 
         // Do not extrapolate forever if the sensor stalls.
-        // Tune based on your AS5600 update period.
-        // if dt > 0.050 {
         if dt > 0.050 {
             return None;
         }

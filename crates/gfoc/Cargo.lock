@@ -398,6 +398,7 @@ dependencies = [
  "embedded-hal-async",
  "embedded-io 0.6.1",
  "embedded-io-async 0.6.1",
+ "fixed",
  "foc",
  "gfoc-proto",
  "heapless 0.8.0",

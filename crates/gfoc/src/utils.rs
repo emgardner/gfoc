@@ -11,8 +11,8 @@ pub fn voltage_divider(vin: f32, r1: f32, r2: f32) -> f32 {
     vin * (r2 / (r1 + r2))
 }
 
-pub fn voltage_divider_vin(vout: f32, r1: f32, r2: f32) -> f32 {
-    vout * ((r1 + r2) / r2)
+pub fn voltage_divider_vin(vin: f32, r1: f32, r2: f32) -> f32 {
+    vin * ((r1 + r2) / r2)
 }
 
 pub fn vbus(voltage: f32) -> f32 {

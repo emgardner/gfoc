@@ -33,7 +33,11 @@ static SHUNT2: StaticCell<OpAmpOutput<'static, peripherals::OPAMP2>> = StaticCel
 static SHUNT3: StaticCell<OpAmpOutput<'static, peripherals::OPAMP3>> = StaticCell::new();
 static VBUS: StaticCell<Peri<'static, peripherals::PA0>> = StaticCell::new();
 
-static CURRENT_SIGNAL: Signal<CriticalSectionRawMutex, (u16, u16, u16, u16)> = Signal::new();
+static RAW_CURRENT_SIGNAL: Signal<CriticalSectionRawMutex, (u16, u16, u16, u16)> = Signal::new();
+pub static CURRENT_SIGNAL: Signal<CriticalSectionRawMutex, (f32, f32, f32, f32)> = Signal::new();
+pub static SAMPLE_TOGGLE: CriticalSectionMutex<
+    RefCell<Option<embassy_stm32::gpio::Output<'static>>>,
+> = CriticalSectionMutex::new(RefCell::new(None));
 
 #[embassy_executor::task]
 pub async fn adc_task(
@@ -75,13 +79,22 @@ pub async fn adc_task(
 
     let injected_adc_1 = adc1.setup_injected_conversions(
         [
-            (shunt1_ch, SampleTime::Cycles125),
-            (shunt3_ch, SampleTime::Cycles125),
-            (vbus_ch, SampleTime::Cycles125),
+            (shunt1_ch, SampleTime::Cycles25),
+            (shunt3_ch, SampleTime::Cycles25),
+            (vbus_ch, SampleTime::Cycles25),
         ],
         InjectedAdcTrigger::from(embassy_stm32::triggers::TIM1_TRGO2, Exten::RisingEdge),
         true, // enable JEOS interrupt
     );
+    // let injected_adc_1 = adc1.setup_injected_conversions(
+    //     [
+    //         (shunt1_ch, SampleTime::Cycles25),
+    //         (shunt3_ch, SampleTime::Cycles25),
+    //         (vbus_ch, SampleTime::Cycles25),
+    //     ],
+    //     InjectedAdcTrigger::from(embassy_stm32::triggers::TIM1_CC4, Exten::RisingEdge),
+    //     true, // enable JEOS interrupt
+    // );
     // let injected_adc_1 = adc1.into_ring_buffered_and_injected(
     //     [
     //         (shunt1_ch, SampleTime::Cycles125),
@@ -92,10 +105,15 @@ pub async fn adc_task(
     // );
 
     let injected_adc_2 = adc2.setup_injected_conversions(
-        [(shunt2_ch, SampleTime::Cycles125)],
+        [(shunt2_ch, SampleTime::Cycles25)],
         InjectedAdcTrigger::from(embassy_stm32::triggers::TIM1_TRGO2, Exten::RisingEdge),
         true, // enable JEOS interrupt
     );
+    // let injected_adc_2 = adc2.setup_injected_conversions(
+    //     [(shunt2_ch, SampleTime::Cycles25)],
+    //     InjectedAdcTrigger::from(embassy_stm32::triggers::TIM1_CC4, Exten::RisingEdge),
+    //     true, // enable JEOS interrupt
+    // );
 
     critical_section::with(|cs| {
         ADCS_HANDLE
@@ -111,14 +129,13 @@ pub async fn adc_task(
     let mut pha_avg = 0.0;
     let mut phb_avg = 0.0;
     let mut phc_avg = 0.0;
-    // let mut sample_time = embassy_time::Instant::now();
     loop {
-        let (phase_a, phase_b, phase_c, v_bus) = CURRENT_SIGNAL.wait().await;
+        let (phase_a, phase_b, phase_c, v_bus) = RAW_CURRENT_SIGNAL.wait().await;
         let (voltage_a, voltage_b, voltage_c, v_bus) = (
             utils::convert_adc_value(phase_a, V_REF, Some(16.0)),
             utils::convert_adc_value(phase_b, V_REF, Some(16.0)),
             utils::convert_adc_value(phase_c, V_REF, Some(16.0)),
-            utils::convert_adc_value(v_bus, V_REF, Some(16.0)),
+            utils::convert_adc_value(v_bus, V_REF, Some(1.0)),
         );
         if avg_count < 10 {
             pha_sum += voltage_a;
@@ -136,21 +153,14 @@ pub async fn adc_task(
                 voltage_b - phb_avg,
                 voltage_c - phc_avg,
             );
-            let (_current_a, _current_b, _current_c, _v_bus) = (
+            let (current_a, current_b, current_c, v_bus) = (
                 utils::shunt_current(va, R_SHUNT),
                 utils::shunt_current(vb, R_SHUNT),
                 utils::shunt_current(vc, R_SHUNT),
-                utils::voltage_divider_vin(v_bus, 169_000.0, 18_000.0),
+                utils::vbus(v_bus),
             );
-            // let now = embassy_time::Instant::now();
-            // if (now - sample_time).as_millis() > 100 {
-            //     sample_time = now;
-            //     defmt::info!("{} {} {}", _current_a, _current_b, _current_c);
-            // }
-            // defmt::info!("{} {} {}", voltage_a, voltage_b, voltage_c);
+            CURRENT_SIGNAL.signal((current_a, current_b, current_c, v_bus));
         }
-
-        // Timer::after_micros(300).await;
     }
 }
 
@@ -158,18 +168,25 @@ pub async fn adc_task(
 #[allow(non_snake_case)]
 unsafe fn ADC1_2() {
     critical_section::with(|cs| {
+        if let Some(sp) = SAMPLE_TOGGLE.borrow(cs).borrow_mut().as_mut() {
+            sp.toggle();
+        }
         if let Some((injected_adc_1, injected_adc_2)) = ADCS_HANDLE.borrow(cs).borrow_mut().as_mut()
         {
             let mut injected_data_1 = [0u16; 3];
+            // let mut injected_data_1 = [0u16; 1];
             let mut injected_data_2 = [0u16; 1];
             injected_adc_1.read_injected_samples(&mut injected_data_1);
             injected_adc_2.read_injected_samples(&mut injected_data_2);
-            CURRENT_SIGNAL.signal((
+            RAW_CURRENT_SIGNAL.signal((
                 injected_data_1[0],
                 injected_data_2[0],
                 injected_data_1[1],
                 injected_data_1[2],
             ));
+        }
+        if let Some(sp) = SAMPLE_TOGGLE.borrow(cs).borrow_mut().as_mut() {
+            sp.toggle();
         }
     });
 }

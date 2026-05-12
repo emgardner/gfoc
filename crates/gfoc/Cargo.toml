@@ -35,13 +35,15 @@ panic-probe = { version = "1.0.0", features = ["print-defmt"] }
 rtt-target = { version = "0.5.0" }
 embedded-hal-async = { version = "1.0.0" }
 defmt = "1.0.1"
-defmt-rtt = "1.1.0"
+defmt-rtt = { version = "1.1.0", features = ["disable-blocking-mode"] }
+#defmt-rtt = { version = "1.1.0" }
 libm = "0.2.16"
 critical-section = "1.2.0"
 foc = "0.3.0"
 as5600 = { version = "0.8.0", features = ["async"] }
 cobs = { version = "0.5.1", default-features = false, features = ["defmt"] }
 gfoc-proto = { path = "../gfoc-proto/", features = ["defmt"] }
+fixed = "1.31.0"
 # thiserror = { version = "2.0.18", default-features = false }
 
 
