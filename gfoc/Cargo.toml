@@ -44,6 +44,8 @@ as5600 = { version = "0.8.0", features = ["async"] }
 cobs = { version = "0.5.1", default-features = false, features = ["defmt"] }
 gfoc-proto = { path = "../gfoc-proto/", features = ["defmt"] }
 fixed = "1.31.0"
+portable-atomic = "1.13.1"
+biquad = "0.6.0"
 # thiserror = { version = "2.0.18", default-features = false }
 
 

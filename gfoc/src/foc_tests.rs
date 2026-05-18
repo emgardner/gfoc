@@ -1,7 +1,7 @@
 use crate::DriverState;
+use crate::board::CURRENT_SIGNAL;
 use crate::control::angle_estimator::AngleEstimator;
 use crate::control::{Step, apply_pwms, apply_step};
-use crate::tasks::adc::CURRENT_SIGNAL;
 use crate::tasks::angle::{ANGLE_SIGNAL, AngleReading};
 use embassy_stm32::timer::AdvancedInstance4Channel;
 use embassy_time::Duration;

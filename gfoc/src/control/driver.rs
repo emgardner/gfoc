@@ -2,7 +2,8 @@ use defmt::*;
 use embassy_stm32::timer::AdvancedInstance4Channel;
 use embassy_stm32::timer::complementary_pwm::ComplementaryPwm;
 
-use crate::control::angle_estimator::AngleEstimator;
+use crate::control::angle_estimator::{AngleEstimator, wrap_0_tau};
+use crate::tasks::angle::AngleReading;
 
 #[derive(Debug, Format, Clone, Copy)]
 pub struct DutyCycle(f32);
@@ -16,6 +17,10 @@ impl DutyCycle {
         } else {
             value
         })
+    }
+
+    pub fn zero() -> Self {
+        Self::new(0.0)
     }
 
     pub fn duty(&self) -> f32 {
@@ -104,24 +109,91 @@ pub enum DriverControlMode {
     Velocity(f32, Direction),
 }
 
+pub struct MotorParams {
+    pub phase_resistance: f32,
+    pub pole_pairs: u32,
+    pub kv: Option<u32>,
+    pub lq: Option<f32>,
+    pub ld: Option<f32>,
+}
+
 pub struct MotorController<T: AdvancedInstance4Channel> {
     driver: MotorDriver<T>,
     control_mode: DriverControlMode,
     angle_estimator: AngleEstimator,
     run: bool,
+    motor_params: MotorParams,
+    vbus: Option<f32>,
 }
 
 impl<T: AdvancedInstance4Channel> MotorController<T> {
-    pub fn new(driver: MotorDriver<T>, control_mode: DriverControlMode) -> MotorController<T> {
+    pub fn new(
+        driver: MotorDriver<T>,
+        control_mode: DriverControlMode,
+        motor_params: MotorParams,
+    ) -> MotorController<T> {
         Self {
             driver,
             control_mode,
             angle_estimator: AngleEstimator::new(),
             run: false,
+            vbus: None,
+            motor_params,
         }
+    }
+
+    pub fn update_vbus(&mut self, vbus: Option<f32>) {
+        self.vbus = vbus;
     }
 
     pub fn set_run(&mut self, run: bool) {
         self.run = run;
     }
+
+    pub fn update_angle(&mut self, angle: AngleReading) {
+        self.angle_estimator.update(angle);
+    }
+
+    pub fn get_mechanical_angle(&self) -> Option<f32> {
+        self.angle_estimator.angle_now(embassy_time::Instant::now())
+    }
+
+    pub fn get_electrical_angle(&self) -> Option<f32> {
+        self.angle_estimator
+            .angle_now(embassy_time::Instant::now())
+            .map(|x| wrap_0_tau(x * self.motor_params.pole_pairs as f32))
+    }
+
+    pub fn get_speed(&self) -> f32 {
+        self.angle_estimator.velocity_rad_s()
+    }
+
+    pub async fn enable(&mut self) {
+        self.driver.enable();
+    }
+
+    pub async fn disable(&mut self) {
+        self.driver.disable();
+    }
+
+    pub async fn align(&mut self, delay: embassy_time::Duration) {
+        self.enable().await;
+        self.driver
+            .set_pwms(DutyCycle::new(0.5), DutyCycle::zero(), DutyCycle::zero());
+        embassy_time::Timer::after(delay).await;
+        self.disable().await;
+    }
+
+    pub fn reset_angle(&mut self) {
+        self.angle_estimator = AngleEstimator::new();
+    }
+
+    // pub fn update_current(&mut self, current: &[f32; 2]) {
+    // }
 }
+
+// pub trait AngleSensor {
+//     pub fn initialize(&mut self)
+//     pub fn update(&mut self, angle: AngleReading)
+//     pub fn update(&mut self, angle: AngleReading)
+// }

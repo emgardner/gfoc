@@ -120,11 +120,6 @@ async fn main(spawner: Spawner) {
     let as5600 = As5600::new(i2c);
     spawner.spawn(tasks::angle::angle_task(as5600).unwrap());
     defmt::info!("Angle Spawned");
-    // let can_term = embassy_stm32::gpio::Output::new(
-    //     p.PC14,
-    //     embassy_stm32::gpio::Level::Low,
-    //     embassy_stm32::gpio::Speed::VeryHigh,
-    // );
     let st = embassy_stm32::gpio::Output::new(
         p.PB6,
         embassy_stm32::gpio::Level::High,
@@ -134,7 +129,6 @@ async fn main(spawner: Spawner) {
     critical_section::with(|cs| {
         SAMPLE_TOGGLE.borrow(cs).replace(Some(st));
     });
-    // SAMPLE_TOGGLE.init(can_term);
     // I2C1 SCL   PB8
     // I2C1 SDA   PB7/PB9
     // CAN_TX     PB9

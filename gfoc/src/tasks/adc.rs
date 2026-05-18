@@ -1,6 +1,6 @@
 use crate::board::{
-    ADCS_HANDLE, OP1, OP2, OP3, R_SHUNT, SAMPLE_TOGGLE, SHUNT1, SHUNT2, SHUNT3, Shunt1, Shunt2,
-    Shunt3, V_REF, VBUS, init_biased_opamp_ext,
+    ADCS_HANDLE, CURRENT_SIGNAL, OP1, OP2, OP3, R_SHUNT, RAW_CURRENT_SIGNAL, SAMPLE_TOGGLE, SHUNT1,
+    SHUNT2, SHUNT3, Shunt1, Shunt2, Shunt3, V_REF, VBUS, init_biased_opamp_ext,
 };
 use crate::utils;
 use embassy_stm32::Peri;
@@ -9,11 +9,6 @@ use embassy_stm32::adc::{Adc, AdcConfig, Exten, InjectedAdcTrigger, SampleTime};
 use embassy_stm32::interrupt;
 use embassy_stm32::interrupt::typelevel::ADC1_2;
 use embassy_stm32::interrupt::typelevel::Interrupt;
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::signal::Signal;
-
-static RAW_CURRENT_SIGNAL: Signal<CriticalSectionRawMutex, (u16, u16, u16, u16)> = Signal::new();
-pub static CURRENT_SIGNAL: Signal<CriticalSectionRawMutex, (f32, f32, f32, f32)> = Signal::new();
 
 #[embassy_executor::task]
 pub async fn adc_task(

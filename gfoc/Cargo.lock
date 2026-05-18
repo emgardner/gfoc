@@ -72,6 +72,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "biquad"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8dee8f423f64504139bdc53d7fbe6a1cd8eff4f354be3652e7cf26385c9f1cb4"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
 name = "bit_field"
 version = "0.10.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -382,6 +391,7 @@ name = "embassy-foc"
 version = "0.1.0"
 dependencies = [
  "as5600",
+ "biquad",
  "cobs 0.5.1",
  "cortex-m",
  "cortex-m-rt",
@@ -404,6 +414,7 @@ dependencies = [
  "heapless 0.8.0",
  "libm",
  "panic-probe",
+ "portable-atomic",
  "rtt-target",
  "static_cell",
 ]
