@@ -109,12 +109,55 @@ pub enum DriverControlMode {
     Velocity(f32, Direction),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MotorParams {
     pub phase_resistance: f32,
     pub pole_pairs: u32,
     pub kv: Option<u32>,
     pub lq: Option<f32>,
     pub ld: Option<f32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ControllerState {
+    Uninitialized,
+    Initializing,
+    Ready,
+    Error,
+}
+
+// Angle From 0 to 2pi
+#[derive(Debug, Clone, Copy)]
+pub struct Angle(f32);
+
+impl Angle {
+    pub fn zero() -> Self {
+        Self(0.0)
+    }
+
+    pub fn new(angle: f32) -> Self {
+        Self(wrap_0_tau(angle))
+    }
+
+    pub fn raw(&self) -> f32 {
+        self.0
+    }
+}
+
+impl core::ops::Add for Angle {
+    type Output = Angle;
+
+    fn add(self, rhs: Angle) -> Self {
+        Self::new(self.raw() + rhs.raw())
+    }
+}
+
+impl core::ops::Sub for Angle {
+    type Output = Angle;
+
+    fn sub(self, rhs: Angle) -> Self {
+        Self::new(self.raw() - rhs.raw())
+    }
 }
 
 pub struct MotorController<T: AdvancedInstance4Channel> {
@@ -124,6 +167,7 @@ pub struct MotorController<T: AdvancedInstance4Channel> {
     run: bool,
     motor_params: MotorParams,
     vbus: Option<f32>,
+    offset_angle: Option<Angle>,
 }
 
 impl<T: AdvancedInstance4Channel> MotorController<T> {
@@ -139,6 +183,7 @@ impl<T: AdvancedInstance4Channel> MotorController<T> {
             run: false,
             vbus: None,
             motor_params,
+            offset_angle: None,
         }
     }
 
@@ -188,8 +233,29 @@ impl<T: AdvancedInstance4Channel> MotorController<T> {
         self.angle_estimator = AngleEstimator::new();
     }
 
-    // pub fn update_current(&mut self, current: &[f32; 2]) {
-    // }
+    pub async fn stop(&mut self) {
+        self.disable().await;
+    }
+
+    pub fn set_motor_params(&mut self, motor_params: MotorParams) {
+        self.motor_params = motor_params;
+    }
+
+    pub fn motor_params(&self) -> MotorParams {
+        self.motor_params
+    }
+
+    pub fn set_control_mode(&mut self, mode: DriverControlMode) {
+        self.control_mode = mode
+    }
+
+    pub fn control_mode(&mut self) -> DriverControlMode {
+        self.control_mode
+    }
+
+    pub fn set_offset_angle(&mut self, angle: Option<Angle>) {
+        self.offset_angle = angle
+    }
 }
 
 // pub trait AngleSensor {

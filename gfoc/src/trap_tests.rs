@@ -153,15 +153,15 @@ pub async fn basic_trap<T: AdvancedInstance4Channel>(
                     }
                     if updates >= 1000 {
                         let elapsed_s = duration_to_secs(embassy_time::Instant::now() - start_time);
-                        let rps = (elapsed_angle / core::f32::consts::TAU) / elapsed_s;
-                        let rpm = rps * 60.0;
+                        // let rps = (elapsed_angle / core::f32::consts::TAU) / elapsed_s;
+                        // let rpm = rps * 60.0;
 
                         //defmt::info!("{:?} {:?} {:?} {:?}", elapsed_s, rps, rpm, pwm);
                         defmt::info!("{:?}", elapsed_s);
 
                         start_time = embassy_time::Instant::now();
                         updates = 0;
-                        elapsed_angle = 0.0;
+                        //elapsed_angle = 0.0;
 
                         // if pwm < max_pwm {
                         //     pwm += 20;

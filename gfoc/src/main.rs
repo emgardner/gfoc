@@ -3,6 +3,7 @@
 
 pub mod board;
 pub mod control;
+pub mod foc_control;
 pub mod foc_tests;
 pub mod tasks;
 pub mod trap_tests;
@@ -14,7 +15,6 @@ use embassy_executor::Spawner;
 use embassy_stm32::bind_interrupts;
 use embassy_stm32::rcc::{AHBPrescaler, APBPrescaler, Pll, PllMul, PllPreDiv, PllRDiv, PllSource};
 use embassy_stm32::{rcc::Hsi48Config, time::Hertz};
-
 use {defmt_rtt as _, panic_probe as _};
 
 bind_interrupts!(struct Irqs {
